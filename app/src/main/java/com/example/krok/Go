@@ -1,0 +1,141 @@
+"""Крок: голосовой помощник для компьютера (Python).
+
+Ждёт фразу «Привет, Крок», слушает команду, отвечает голосом.
+Круглый значок со смайликом меняет цвет и лицо.
+
+Запуск:  pip install -r requirements.txt   затем   python krok.py
+"""
+import queue
+import threading
+import time
+import tkinter as tk
+
+import pyttsx3
+import speech_recognition as sr
+
+WAKE_WORD = "привет крок"
+
+COLORS = {
+    "idle": "#2196F3",       # покой: синий
+    "listening": "#4CAF50",  # слушает: зелёный
+    "thinking": "#FFC107",   # думает: жёлтый
+    "done": "#FF9800",       # выполнил команду: оранжевый
+    "confused": "#2196F3",   # не расслышал: синий, удивлённое лицо
+}
+
+
+class Face:
+    """Круглый значок, который меняет цвет и выражение."""
+
+    def __init__(self, root):
+        self.canvas = tk.Canvas(root, width=200, height=200, bg="white", highlightthickness=0)
+        self.canvas.pack()
+        self.set_state("idle")
+
+    def set_state(self, state):
+        c = self.canvas
+        c.delete("all")
+        c.create_oval(10, 10, 190, 190, fill=COLORS[state], outline="")
+
+        eye = {"listening": 18, "confused": 20}.get(state, 12)
+        shift = -8 if state == "thinking" else 0
+        for x in (70, 130):
+            c.create_oval(x - eye, 80 + shift - eye, x + eye, 80 + shift + eye,
+                          fill="white", outline="")
+
+        if state == "idle":
+            c.create_arc(70, 100, 130, 160, start=200, extent=140,
+                         style="arc", outline="white", width=5)
+        elif state == "listening":
+            c.create_line(80, 140, 120, 140, fill="white", width=5, capstyle="round")
+        elif state == "thinking":
+            c.create_line(80, 142, 120, 136, fill="white", width=5, capstyle="round")
+        elif state == "done":
+            c.create_arc(65, 100, 135, 160, start=180, extent=180,
+                         style="chord", fill="white", outline="white")
+        elif state == "confused":
+            c.create_oval(86, 128, 114, 156, fill="white", outline="")
+
+
+def hear(recognizer, mic, timeout):
+    """Слушает микрофон и возвращает текст в нижнем регистре или пустую строку."""
+    try:
+        audio = recognizer.listen(mic, timeout=timeout, phrase_time_limit=8)
+        text = recognizer.recognize_google(audio, language="ru-RU")
+        return text.lower().replace(",", "").strip()
+    except (sr.WaitTimeoutError, sr.UnknownValueError):
+        return ""
+    except sr.RequestError as error:
+        print("Нет связи с сервисом распознавания:", error)
+        return ""
+
+
+def handle_command(command, set_state, say):
+    """Первая версия: Крок слышит команду и повторяет её.
+    Настоящие действия (будильник, звонок и т.д.) добавляются здесь."""
+    set_state("thinking")
+    time.sleep(0.6)
+    set_state("done")
+    say(f"Я услышал: {command}")
+    time.sleep(1.0)
+    set_state("idle")
+
+
+def worker(ui_queue):
+    recognizer = sr.Recognizer()
+    engine = pyttsx3.init()
+
+    def set_state(state):
+        ui_queue.put(state)
+
+    def say(text):
+        engine.say(text)
+        engine.runAndWait()
+
+    with sr.Microphone() as mic:
+        recognizer.adjust_for_ambient_noise(mic, duration=1)
+        print("Крок слушает. Скажите: «Привет, Крок».")
+        while True:
+            text = hear(recognizer, mic, timeout=5)
+            if WAKE_WORD not in text:
+                continue
+
+            # «привет крок поставь таймер» — команда в той же фразе
+            command = text.split(WAKE_WORD, 1)[1].strip()
+            if not command:
+                set_state("listening")
+                command = hear(recognizer, mic, timeout=6)
+
+            if command:
+                handle_command(command, set_state, say)
+            else:
+                set_state("confused")
+                say("Не расслышал")
+                time.sleep(0.5)
+                set_state("idle")
+
+
+def main():
+    root = tk.Tk()
+    root.title("Крок")
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    face = Face(root)
+    ui_queue = queue.Queue()
+
+    def poll():
+        # tkinter нельзя трогать из другого потока, поэтому состояния идут через очередь
+        try:
+            while True:
+                face.set_state(ui_queue.get_nowait())
+        except queue.Empty:
+            pass
+        root.after(100, poll)
+
+    threading.Thread(target=worker, args=(ui_queue,), daemon=True).start()
+    poll()
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
